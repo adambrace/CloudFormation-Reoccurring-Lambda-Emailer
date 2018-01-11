@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template to Create Notifications/Tickets on a reoccuring basis'
+Parameters:
+  Customer:
+    Description: Account number in the form H123456
+    Type: String
+  NotificationFrequency:
+    Description: Select A frequency for auto Notification
+    Default: Monthly
+    AllowedValues:
+    - Daily
+    - Weekly
+    - Monthly
+    Type: String
+  NotificationDescription:
+    Description: Enter a Short Description of what this notification is for 10 char max (eg Patching, Reporting)
+    Type: String
+  ProcessURL:
+    Description: Enter the URL for the notebook proceedure docutmenting what to do with this Ticket)
+    Type: String  
+  DestinationEmail:
+    Description: Email address you want sent to. 
+    Type: String
+    Default: something@domain.tld
+
+Mappings:
+  CronFrequencyMatch:
+    Daily:
+      CronOutput: "cron(0 8 * * ? *)"
+    Weekly:
+      CronOutput: "cron(0 8 ? * SUN *)"
+    Monthly:
+      CronOutput: "cron(0 8 1 * ? *)"            
+      
+Resources:
+
+  SNSTopic: 
+    Type: "AWS::SNS::Topic"
+    Properties: 
+        TopicName: !Join [ "", [ !Ref Customer,"-", !Ref NotificationFrequency,"-", !Ref NotificationDescription] ]
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+        Endpoint: !Ref DestinationEmail
+        Protocol: email
+        TopicArn: !Ref 'SNSTopic'
+  TestLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                - lambda.amazonaws.com
+              Action:
+              - sts:AssumeRole
+        RoleName: !Join [ "", [ !Ref Customer,"-", !Ref NotificationFrequency,"-", !Ref NotificationDescription, "-Role"] ]
+        Policies:
+          - PolicyName: !Join [ "", [ !Ref Customer,"-", !Ref NotificationFrequency,"-", !Ref NotificationDescription, "-Policy"] ]
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                - Effect: Allow
+                  Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  Resource: 
+                  - "arn:aws:logs:*:*:*"
+
+                - Effect: "Allow"
+                  Action:
+                  - "sns:Publish"
+                  Resource: !Ref 'SNSTopic'
+                
+        Path: "/"
+  CronFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: 
+            !Sub |
+                import boto3
+
+                arn='${SNSTopic}'
+                subject='${Customer} ${NotificationFrequency} ${NotificationDescription}'
+                message="""${NotificationFrequency} ${NotificationDescription} ticket for Customer
+
+                Set this email to contact CUSTOMER EMAIL and remove no-reply@sns.amazonaws.com
+
+                Please follow the procedures as documented in the notebook:
+                ${ProcessURL}
+
+                This is an automated message. Do Not Unsubscribe to this email.
+                """
+
+                def lambda_handler(event, context):
+                    client = boto3.client('sns')
+
+                    response = client.publish(
+                        TopicArn=arn,
+                        Subject=subject,
+                        Message=message
+                    )
+              
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt: [ TestLambdaRole , "Arn" ]
+      Runtime: python3.6
+      Timeout: 60
+  CronEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: !FindInMap [CronFrequencyMatch, !Ref NotificationFrequency, CronOutput]
+      Targets:
+        - Arn:
+            Fn::GetAtt: [ CronFunction , "Arn" ]
+          Id:
+            Ref: CronFunction
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::GetAtt: [ CronFunction ,"Arn" ]
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt: [ CronEvent , "Arn" ]

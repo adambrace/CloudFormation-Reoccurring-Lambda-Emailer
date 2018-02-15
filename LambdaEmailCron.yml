@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: 'Template to Create Notifications/Tickets on a reoccuring basis'
 Parameters:
   Customer:
-    Description: Account number in the form H123456
+    Description: Account number or unique ID
     Type: String
   NotificationFrequency:
     Description: Select A frequency for auto Notification
@@ -11,17 +11,22 @@ Parameters:
     - Daily
     - Weekly
     - Monthly
+
     Type: String
   NotificationDescription:
     Description: Enter a Short Description of what this notification is for 10 char max (eg Patching, Reporting)
     Type: String
   ProcessURL:
-    Description: Enter the URL for the notebook proceedure docutmenting what to do with this Ticket)
+    Description: Enter the URL for the Knowledge Base article documenting what to do with this Email)
     Type: String  
   DestinationEmail:
     Description: Email address you want sent to. 
     Type: String
-    Default: something@domain.tld
+    Default: user@email.com
+  DeadLetterEmail:
+    Description: Email address you want sent to in the event that the Cron email fails. 
+    Type: String
+    Default: user@email.com
 
 Mappings:
   CronFrequencyMatch:
@@ -44,7 +49,17 @@ Resources:
         Endpoint: !Ref DestinationEmail
         Protocol: email
         TopicArn: !Ref 'SNSTopic'
-  TestLambdaRole:
+  DeadLetterSNSTopic: 
+    Type: "AWS::SNS::Topic"
+    Properties: 
+        TopicName: !Join [ "", ["FAILED-", !Ref Customer,"-", !Ref NotificationFrequency,"-", !Ref NotificationDescription] ]
+  DeadLetterSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+        Endpoint: !Ref DeadLetterEmail
+        Protocol: email
+        TopicArn: !Ref 'DeadLetterSNSTopic'
+  LambdaRole:
     Type: AWS::IAM::Role
     Properties:
         AssumeRolePolicyDocument:
@@ -74,6 +89,11 @@ Resources:
                   Action:
                   - "sns:Publish"
                   Resource: !Ref 'SNSTopic'
+                  
+                - Effect: "Allow"
+                  Action:
+                  - "sns:Publish"
+                  Resource: !Ref 'DeadLetterSNSTopic'
                 
         Path: "/"
   CronFunction:
@@ -105,9 +125,11 @@ Resources:
                         Message=message
                     )
               
+      DeadLetterConfig:
+        TargetArn: !Ref 'DeadLetterSNSTopic' 
       Handler: index.lambda_handler
       Role:
-        Fn::GetAtt: [ TestLambdaRole , "Arn" ]
+        Fn::GetAtt: [ LambdaRole , "Arn" ]
       Runtime: python3.6
       Timeout: 60
   CronEvent:
